@@ -2,11 +2,21 @@
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
 
+
+
+
+// XSHUT pins 
+#define PITCH_XSHUT  2
+#define VOLUME_XSHUT 3
+
 Adafruit_USBD_MIDI usb_midi;
 Adafruit_VL53L0X pitchSensor;
 Adafruit_VL53L0X volumeSensor;
 
 MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
+
+const int MIN_DIST = 30;
+const int MAX_DIST = 400;
 
 
 void setup() {
