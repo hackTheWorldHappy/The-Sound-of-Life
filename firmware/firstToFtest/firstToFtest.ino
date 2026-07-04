@@ -1,54 +1,68 @@
-#include <Adafruit_VL53L0X.h>
-#include <Adafruit_TinyUSB.h>
-#include <MIDI.h>
+  #include <Adafruit_VL53L0X.h>
+  #include <Adafruit_TinyUSB.h>
+  #include <MIDI.h>
 
-Adafruit_USBD_MIDI usb_midi;
-Adafruit_VL53L0X pitchSensor;
-Adafruit_VL53L0X volumeSensor;
+  Adafruit_USBD_MIDI usb_midi;
+  Adafruit_VL53L0X pitchSensor;
+  Adafruit_VL53L0X volumeSensor;
 
-MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
-
-
-void setup() {
-  Serial.begin(115200);  //may increase when need faster comms
-  Wire.begin();
-  pitchSensor.begin();
-  volumeSensor.begin();
-
-  //Set Address
-  pitchSensor.setAddress(0x29);  //Default
-  volumeSensor.setAddress(0x30);
+  MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
 
 
-  //midi init
-  MIDI.begin(MIDI_CHANNEL_OMNI);
-  MIDI.setHandleNoteOn(handleNoteOn);
-  MIDI.setHandleNoteOff(handleNoteOff);
-}
+  void setup() {
+    Serial.begin(115200);  //may increase when need faster comms
+    Wire.begin();
+    pitchSensor.begin();
+    volumeSensor.begin();
 
-void loop() {
-  VL53L0X_RangingMeasurementData_t pitchMeasure;
-  pitchSensor.rangingTest(&pitchMeasure, true);
-  VL53L0X_RangingMeasurementData_t volumeMeasure;
-  volumeSensor.rangingTest(&volumeMeasure, true);
+    //Set Address
+    pitchSensor.setAddress(0x29);  //Default
+    volumeSensor.setAddress(0x30);
 
 
-  Serial.println(pitchMeasure.RangeMilliMeter);
-  Serial.println(volumeMeasure.RangeMilliMeter);
-  MIDI.sendNoteOn(60, 127, 1);  // Send middle C
-  MIDI.read();                  // Process incoming messages
-}
+    //midi init
+    MIDI.begin(MIDI_CHANNEL_OMNI);
+    MIDI.setHandleNoteOn(handleNoteOn);
+    MIDI.setHandleNoteOff(handleNoteOff);
+  }
 
-/*
-void sendNote(uint8_t note) {
-  uint8_t msg[3];
-
-  msg[0] = 0x90;
-  msg[1] = 61;
-  msg[2] = 127;
-
-  usb_midi.send(msg, 3);
-}
-*/
+  void loop() {
+    VL53L0X_RangingMeasurementData_t pitchMeasure;
+    pitchSensor.rangingTest(&pitchMeasure, true);
+    VL53L0X_RangingMeasurementData_t volumeMeasure;
+    volumeSensor.rangingTest(&volumeMeasure, true);
 
 
+    Serial.println(pitchMeasure.RangeMilliMeter);
+    Serial.println(volumeMeasure.RangeMilliMeter);
+    delay(1000);
+    Serial.println("MIDI sending");
+    MIDI.sendNoteOn(60, 127, 1);  // Send middle C
+    MIDI.sendNoteOff(60, 0, 1);
+    MIDI.read();                  // Process incoming messages
+  }
+
+
+  void handleNoteOn(byte channel, byte pitch, byte velocity) {
+    // Log when a note is pressed.
+    Serial.print("Note on: channel = ");
+    Serial.print(channel);
+
+    Serial.print(" pitch = ");
+    Serial.print(pitch);
+
+    Serial.print(" velocity = ");
+    Serial.println(velocity);
+  }
+
+  void handleNoteOff(byte channel, byte pitch, byte velocity) {
+    // Log when a note is released.
+    Serial.print("Note off: channel = ");
+    Serial.print(channel);
+
+    Serial.print(" pitch = ");
+    Serial.print(pitch);
+
+    Serial.print(" velocity = ");
+    Serial.println(velocity);
+  }
