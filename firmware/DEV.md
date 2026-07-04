@@ -14,3 +14,7 @@ https://github.com/earlephilhower/arduino-pico/releases/download/global/package_
 
 
 install libs
+
+
+Tools > Usb Stack
+use Adafruit one
