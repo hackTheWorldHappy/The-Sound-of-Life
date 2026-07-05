@@ -10,7 +10,6 @@
 #define PITCH_ADDR 0x30
 #define VOLUME_ADDR 0x31
 
-
 #define I2C_SDA 11
 #define I2C_SCL 12
 
@@ -20,6 +19,8 @@
 #define TFT_CS 14
 #define TFT_DC 15
 #define TFT_RST 16
+#define TFT_SCK 10	// TFT "SCL" pin
+#define TFT_MOSI 13 // TFT "SDA" pin
 
 #define PITCH_MIN_MM 30
 #define PITCH_MAX_MM 480
@@ -39,7 +40,7 @@ Adafruit_VL53L0X volumeSensor;
 
 // TFT
 // Backlight tied to VCC (no pin control).
-Adafruit_ST7735 tft(&SPI, TFT_CS, TFT_DC, TFT_RST);
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
 const int16_t SCREEN_W = 128;
 const int16_t SCREEN_H = 160;
@@ -123,7 +124,7 @@ int mapPitchToNote(uint16_t mm)
 int mapPitchToBend(uint16_t mm)
 {
 	return (int)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM),
-					 PITCH_MIN_MM, PITCH_MAX_MM, -8192, 8191);
+					PITCH_MIN_MM, PITCH_MAX_MM, -8192, 8191);
 }
 byte mapVolumeToExpression(uint16_t mm)
 {
@@ -132,7 +133,8 @@ byte mapVolumeToExpression(uint16_t mm)
 		return 0;
 	}
 	// if hand beyond VOLUME_MAX_MM, force volume down
-	if (mm > VOLUME_MAX_MM) {
+	if (mm > VOLUME_MAX_MM)
+	{
 		return 0;
 	}
 	return (byte)map(constrain((long)mm, (long)VOLUME_MIN_MM, (long)VOLUME_MAX_MM), VOLUME_MIN_MM, VOLUME_MAX_MM, 127, 0);
@@ -256,7 +258,7 @@ void setup()
 
 	Serial.println("Two VL53L0X ready!");
 
-	SPI.begin();
+	SPI.begin(TFT_SCK, -1, TFT_MOSI, TFT_CS); // sck, miso, mosi, ss
 	tft.initR(INITR_BLACKTAB);
 	tft.setRotation(0);
 	tft.fillScreen(ST77XX_BLACK);
