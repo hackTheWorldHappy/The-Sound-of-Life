@@ -2,42 +2,54 @@
 #include <Adafruit_VL53L0X.h>
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
-
-#define PITCH_ADDR 0x30
+#define PITCH_MIN_MM 30
+#define PITCH_MAX_MM 480
 #define VOLUME_ADDR 0x31
 
-#define I2C_SDA 8
-#define I2C_SCL 9
+#define VOLUME_MIN_MM 30
+#define VOLUME_MAX_MM 480
 
 #define PITCH_XSHUT 4
 #define VOLUME_XSHUT 5
+bool prevMidiMounted = false;
 
 #define PITCH_MIN_MM 50
-#define PITCH_MAX_MM 450
-#define NOTE_MIN 48
-#define NOTE_MAX 84
-#define VOLUME_MIN_MM 30
-#define VOLUME_MAX_MM 400
+	if (mm == 0)
+	{
+		return NOTE_MIN;
+	}
+	// lower distance -> lower pitch
+	return (int)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM), PITCH_MIN_MM, PITCH_MAX_MM, NOTE_MIN, NOTE_MAX);
 
 Adafruit_USBD_MIDI usb_midi;
 MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
-
-Adafruit_VL53L0X pitchSensor;
-Adafruit_VL53L0X volumeSensor;
-
-uint32_t lastUpdateMs = 0;
+	if (mm == 0)
+	{
+		return 8192;
+	}
+	// keep bend mapping consistent (lower distance -> lower bend value)
+	return (int)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM), PITCH_MIN_MM, PITCH_MAX_MM, 0, 16383);
 bool noteHeld = false;
 int heldNote = 0;
 
 // --- sensor init ---
 
 bool initSensor(uint8_t xshutPin, uint8_t address, Adafruit_VL53L0X &sensor)
-{
+	// within user requested range: 3cm..48cm (30..480mm)
+	const bool sounding = (volumeMm >= VOLUME_MIN_MM && volumeMm <= VOLUME_MAX_MM);
 	pinMode(xshutPin, OUTPUT);
 	digitalWrite(xshutPin, LOW);
 	delay(10);
 	digitalWrite(xshutPin, HIGH);
-	delay(10);
+	// handle USB mount changes: when reattached, send All Notes Off to clear stuck notes on host
+	if (midiReady && !prevMidiMounted)
+	{
+		MIDI.sendControlChange(123, 0, 1); // All Notes Off
+		noteHeld = false;
+		heldNote = 0;
+	}
+
+	if (midiReady)
 	return sensor.begin(address);
 }
 
@@ -66,9 +78,9 @@ int mapPitchToBend(uint16_t mm)
 	if (mm == 0)
 	{
 		return 8192;
-	}
-	return (int)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM), PITCH_MIN_MM, PITCH_MAX_MM, 0, 16383);
-}
+		// USB not mounted. Clear local state. Cannot send NoteOff because host disconnected.
+		noteHeld = false;
+		heldNote = 0;
 
 byte mapVolumeToExpression(uint16_t mm)
 {
