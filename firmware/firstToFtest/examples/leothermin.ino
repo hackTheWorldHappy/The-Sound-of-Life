@@ -1,5 +1,4 @@
-
- #include <Wire.h>
+#include <Wire.h>
 #include <Adafruit_VL53L0X.h>
 #include <MIDIUSB.h>
 
