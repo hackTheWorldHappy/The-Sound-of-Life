@@ -1,9 +1,5 @@
-#include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_VL53L0X.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7735.h>
-#include <SPI.h>
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
 
@@ -15,12 +11,6 @@
 
 #define PITCH_XSHUT 4
 #define VOLUME_XSHUT 5
-
-#define TFT_CS 6
-#define TFT_DC 7
-#define TFT_RST 15
-#define TFT_SCK 16
-#define TFT_MOSI 17
 
 #define PITCH_MIN_MM 50
 #define PITCH_MAX_MM 450
@@ -35,49 +25,7 @@ MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
 Adafruit_VL53L0X pitchSensor;
 Adafruit_VL53L0X volumeSensor;
 
-// TFT
-SPIClass tftSPI(FSPI);
-Adafruit_ST7735 tft(&tftSPI, TFT_CS, TFT_DC, TFT_RST);
-
-const int16_t SCREEN_W = 128;
-const int16_t SCREEN_H = 160;
-const int16_t CURSOR_ZONE_W = 14; // left strip: "now" + hand arrow
-const int16_t BARCODE_X = CURSOR_ZONE_W;
-const int16_t BARCODE_W = SCREEN_W - CURSOR_ZONE_W;
-GFXcanvas16 canvas(SCREEN_W, SCREEN_H);
-const float PIXELS_PER_MS = 0.06f;
-
-// Song Data, currently twinkle twinkle little star
-struct SongNote
-{
-	uint8_t note;
-	uint16_t durationMs;
-};
-
-const SongNote song[] = {
-	{60, 400},
-	{60, 400},
-	{67, 400},
-	{67, 400},
-	{69, 400},
-	{69, 400},
-	{67, 800},
-	{65, 400},
-	{65, 400},
-	{64, 400},
-	{64, 400},
-	{62, 400},
-	{62, 400},
-	{60, 800},
-};
-const uint8_t songLength = sizeof(song) / sizeof(song[0]);
-
-uint32_t songCumMs[sizeof(song) / sizeof(song[0]) + 1];
-uint32_t totalSongMs = 0;
-uint32_t songStartMs = 0;
-
 uint32_t lastUpdateMs = 0;
-uint32_t lastDisplayMs = 0;
 bool noteHeld = false;
 int heldNote = 0;
 
@@ -131,74 +79,6 @@ byte mapVolumeToExpression(uint16_t mm)
 	return (byte)map(constrain((long)mm, (long)VOLUME_MIN_MM, (long)VOLUME_MAX_MM), VOLUME_MIN_MM, VOLUME_MAX_MM, 127, 0);
 }
 
-// given a target note, what mm should the hand be at
-uint16_t noteToMm(uint8_t note)
-{
-	int n = constrain((int)note, NOTE_MIN, NOTE_MAX);
-	return (uint16_t)map(n, NOTE_MAX, NOTE_MIN, PITCH_MIN_MM, PITCH_MAX_MM);
-}
-
-int16_t mmToY(uint16_t mm)
-{
-	return (int16_t)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM),
-						PITCH_MIN_MM, PITCH_MAX_MM, 0, SCREEN_H - 1);
-}
-
-// Song helpers
-void buildSongTiming()
-{
-	songCumMs[0] = 0;
-	for (uint8_t i = 0; i < songLength; i++)
-	{
-		songCumMs[i + 1] = songCumMs[i] + song[i].durationMs;
-	}
-	totalSongMs = songCumMs[songLength];
-}
-
-uint8_t noteAtTime(uint32_t t)
-{
-	t %= totalSongMs;
-	for (uint8_t i = 0; i < songLength; i++)
-	{
-		if (t < songCumMs[i + 1])
-		{
-			return song[i].note;
-		}
-	}
-	return song[songLength - 1].note;
-}
-
-// Display
-void drawFrame(uint16_t handMm)
-{
-	canvas.fillScreen(ST77XX_BLACK);
-
-	uint32_t nowMs = (millis() - songStartMs) % totalSongMs;
-
-	// Scrolling barcode: column 0 = "now"
-	for (int16_t x = 0; x < BARCODE_W; x++)
-	{
-		uint32_t t = (nowMs + (uint32_t)(x / PIXELS_PER_MS)) % totalSongMs;
-		uint8_t note = noteAtTime(t);
-		uint16_t targetMm = noteToMm(note);
-		int16_t y = mmToY(targetMm);
-		uint16_t color = ST77XX_CYAN;
-		canvas.fillRect(BARCODE_X + x, y - 1, 1, 3, color);
-	}
-
-	// "Now" reference line at the boundary between the cursor zone and barcode
-	canvas.drawFastVLine(BARCODE_X, 0, SCREEN_H, ST77XX_YELLOW);
-
-	// Current hand height, drawn as a right-pointing arrow in the left zone
-	if (handMm > 0)
-	{
-		int16_t y = mmToY(handMm);
-		canvas.fillTriangle(0, y - 4, 0, y + 4, CURSOR_ZONE_W - 2, y, ST77XX_RED);
-	}
-
-	tft.drawRGBBitmap(0, 0, canvas.getBuffer(), SCREEN_W, SCREEN_H);
-}
-
 void setup()
 {
 	Serial.begin(115200);
@@ -239,13 +119,6 @@ void setup()
 	}
 
 	Serial.println("Two VL53L0X ready!");
-
-	tftSPI.begin(TFT_SCK, -1, TFT_MOSI, TFT_CS);
-	tft.initR(INITR_BLACKTAB);
-	tft.setRotation(0);
-	tft.fillScreen(ST77XX_BLACK);
-	buildSongTiming();
-	songStartMs = millis();
 }
 
 void loop()
@@ -253,6 +126,8 @@ void loop()
 #ifdef TINYUSB_NEED_POLLING_TASK
 	TinyUSBDevice.task();
 #endif
+
+	Serial.println("test");
 
 	uint32_t nowMillis = millis();
 	if (nowMillis - lastUpdateMs < 25)
@@ -311,10 +186,4 @@ void loop()
 	}
 
 	MIDI.read();
-
-	if (nowMillis - lastDisplayMs >= 50)
-	{
-		lastDisplayMs = nowMillis;
-		drawFrame(pitchMm);
-	}
 }
