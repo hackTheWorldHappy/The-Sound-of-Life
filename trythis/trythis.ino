@@ -52,6 +52,7 @@ Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
 bool sounding = false;
 uint16_t lastValidPitchMm = 150;
+uint16_t lastValidVolumeMm = 300;
 
 float pitchSmooth = 0;
 
@@ -160,14 +161,16 @@ void loop() {
 
 	if (pitchMm) lastValidPitchMm = pitchMm;
 	pitchMm = lastValidPitchMm;
+	if (volumeMm) lastValidVolumeMm = volumeMm;
+	volumeMm = lastValidVolumeMm;
 
 	int note = mapPitchToNote(pitchMm);
 	int freq = noteToFreq(note);
 	int velocity = mapVolumeToVelocity(volumeMm);
 
-	// sound gate
-	if (volumeMm > VOLUME_ON_MM) sounding = true;
-	if (volumeMm < VOLUME_OFF_MM) sounding = false;
+	// sound gate with hysteresis
+	if (volumeMm > VOLUME_OFF_MM) sounding = true;
+	else if (volumeMm < VOLUME_ON_MM) sounding = false;
 
 	// smoothing pitch
 	pitchSmooth = pitchSmooth * 0.85 + freq * 0.15;
