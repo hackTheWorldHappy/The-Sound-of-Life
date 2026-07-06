@@ -32,10 +32,12 @@
 #define TFT_CS 10
 #define TFT_RST 9
 #define TFT_DC 14
-// SPI pins used with SPI.begin(sck, miso, mosi, cs) below
+
+#define BTN_PIN 16
+
 
 #define SCREEN_W 128
-#define SCREEN_H 160 // most ST7735 1.8" panels are 128x160 -- change if yours differs
+#define SCREEN_H 160  // most ST7735 1.8" panels are 128x160 -- change if yours differs
 
 float p = 3.1415926;
 
@@ -48,27 +50,26 @@ Adafruit_VL53L0X volumeSensor;
 // THIS WAS MISSING -- tft was used everywhere but never declared
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
-struct SongNote
-{
+struct SongNote {
 	uint8_t note;
 	uint16_t durationMs;
 };
 
 const SongNote song[] = {
-	{60, 400},
-	{60, 400},
-	{67, 400},
-	{67, 400},
-	{69, 400},
-	{69, 400},
-	{67, 800},
-	{65, 400},
-	{65, 400},
-	{64, 400},
-	{64, 400},
-	{62, 400},
-	{62, 400},
-	{60, 800},
+	{ 60, 400 },
+	{ 60, 400 },
+	{ 67, 400 },
+	{ 67, 400 },
+	{ 69, 400 },
+	{ 69, 400 },
+	{ 67, 800 },
+	{ 65, 400 },
+	{ 65, 400 },
+	{ 64, 400 },
+	{ 64, 400 },
+	{ 62, 400 },
+	{ 62, 400 },
+	{ 60, 800 },
 };
 const uint8_t songLength = sizeof(song) / sizeof(song[0]);
 
@@ -86,34 +87,29 @@ int lastSentNoteOn = 0;
 
 uint16_t lastValidPitchMm = (PITCH_MIN_MM + PITCH_MAX_MM) / 2;
 
-bool bringUpSensor(uint8_t xshutPin, uint8_t address, Adafruit_VL53L0X &sensor)
-{
+bool bringUpSensor(uint8_t xshutPin, uint8_t address, Adafruit_VL53L0X &sensor) {
 	digitalWrite(xshutPin, HIGH);
 	delay(10);
 	return sensor.begin(address);
 }
 
-uint16_t readMm(Adafruit_VL53L0X &sensor)
-{
+uint16_t readMm(Adafruit_VL53L0X &sensor) {
 	VL53L0X_RangingMeasurementData_t measurement;
 	sensor.rangingTest(&measurement, false);
 
 	// Valid is 0
-	if (measurement.RangeStatus == 4)
-	{
+	if (measurement.RangeStatus == 4) {
 		return 0;
 	}
 
 	return measurement.RangeMilliMeter;
 }
 
-int mapPitchToNote(uint16_t mm)
-{
+int mapPitchToNote(uint16_t mm) {
 	return (int)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM), PITCH_MIN_MM, PITCH_MAX_MM, NOTE_MIN, NOTE_MAX);
 }
 
-int mapVolumeToVelocity(uint16_t mm)
-{
+int mapVolumeToVelocity(uint16_t mm) {
 	if (mm == 0)
 		return 0;
 	if (mm < VOLUME_ON_MM)
@@ -129,14 +125,12 @@ int mapVolumeToVelocity(uint16_t mm)
 	return (int)(curved * VELOCITY_MAX);
 }
 
-int mapPitchToBend(uint16_t mm)
-{
+int mapPitchToBend(uint16_t mm) {
 	return (int)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM),
-					PITCH_MIN_MM, PITCH_MAX_MM, -8192, 8191);
+	                PITCH_MIN_MM, PITCH_MAX_MM, -8192, 8191);
 }
 
-byte mapVolumeToExpression(uint16_t mm)
-{
+byte mapVolumeToExpression(uint16_t mm) {
 	if (mm == 0)
 		return 0;
 	if (mm > VOLUME_MAX_MM)
@@ -144,53 +138,45 @@ byte mapVolumeToExpression(uint16_t mm)
 	return (byte)map(constrain((long)mm, (long)VOLUME_MIN_MM, (long)VOLUME_MAX_MM), VOLUME_MIN_MM, VOLUME_MAX_MM, 127, 0);
 }
 
-uint16_t noteToMm(uint8_t note)
-{
+uint16_t noteToMm(uint8_t note) {
 	int n = constrain((int)note, NOTE_MIN, NOTE_MAX);
 	return (uint16_t)map(n, NOTE_MAX, NOTE_MIN, PITCH_MIN_MM, PITCH_MAX_MM);
 }
 
-int16_t mmToX(uint16_t mm)
-{
+int16_t mmToX(uint16_t mm) {
 	return (int16_t)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM),
-						PITCH_MIN_MM, PITCH_MAX_MM, 0, SCREEN_W - 1);
+	                    PITCH_MIN_MM, PITCH_MAX_MM, 0, SCREEN_W - 1);
 }
-int16_t mmToX_Volume(uint16_t mm)
-{
+int16_t mmToX_Volume(uint16_t mm) {
 	return (int16_t)map(constrain((long)mm, (long)VOLUME_MIN_MM, (long)VOLUME_MAX_MM),
-						VOLUME_MIN_MM, VOLUME_MAX_MM, 0, SCREEN_W - 1);
+	                    VOLUME_MIN_MM, VOLUME_MAX_MM, 0, SCREEN_W - 1);
 }
 
-void buildSongTiming()
-{
+void buildSongTiming() {
 	songCumMs[0] = 0;
-	for (uint8_t i = 0; i < songLength; i++)
-	{
+	for (uint8_t i = 0; i < songLength; i++) {
 		songCumMs[i + 1] = songCumMs[i] + song[i].durationMs;
 	}
 	totalSongMs = songCumMs[songLength];
 }
 
-uint8_t noteAtTime(uint32_t t)
-{
+uint8_t noteAtTime(uint32_t t) {
 	t %= totalSongMs;
-	for (uint8_t i = 0; i < songLength; i++)
-	{
+	for (uint8_t i = 0; i < songLength; i++) {
 		if (t < songCumMs[i + 1])
 			return song[i].note;
 	}
 	return song[songLength - 1].note;
 }
 
-void setup()
-{
+void setup() {
 	Serial.begin(115200);
 
 	SPI.begin();
 	Serial.println(F("Initializing TFT..."));
 	tft.initR(INITR_GREENTAB);
 	tft.fillScreen(ST77XX_BLACK);
-	tft.setRotation(0); // For Testing
+	tft.setRotation(0);  // For Testing
 	Serial.println(F("TFT initialized"));
 
 	// --- Sensors ---
@@ -202,37 +188,31 @@ void setup()
 	digitalWrite(VOLUME_XSHUT, LOW);
 	delay(10);
 
-	if (!TinyUSBDevice.isInitialized())
-	{
+	if (!TinyUSBDevice.isInitialized()) {
 		TinyUSBDevice.begin(0);
 	}
 
 	usb_midi.setStringDescriptor("Theremin MIDI");
 	MIDI.begin(MIDI_CHANNEL_OMNI);
 
-	if (TinyUSBDevice.mounted())
-	{
+	if (TinyUSBDevice.mounted()) {
 		TinyUSBDevice.detach();
-		delay(10);
+		delay(500);
 		TinyUSBDevice.attach();
+		delay(500);
 	}
 
-	if (!bringUpSensor(PITCH_XSHUT, PITCH_ADDR, pitchSensor))
-	{
+	if (!bringUpSensor(PITCH_XSHUT, PITCH_ADDR, pitchSensor)) {
 		Serial.println("Failed to detect Pitch sensor");
 		delay(1000);
 	}
 
-	if (!bringUpSensor(VOLUME_XSHUT, VOLUME_ADDR, volumeSensor))
-	{
+	if (!bringUpSensor(VOLUME_XSHUT, VOLUME_ADDR, volumeSensor)) {
 		Serial.println("Failed to detect Volume sensor");
 		delay(1000);
 	}
 
 	Serial.println("Two VL53L0X ready!");
-
-	buildSongTiming();
-	songStartMs = millis();
 
 	// quick one-shot visual confirmation the panel is alive
 	tft.fillScreen(ST77XX_BLACK);
@@ -244,15 +224,13 @@ void setup()
 	tft.fillScreen(ST77XX_BLACK);
 }
 
-void loop()
-{
+void loop() {
 #ifdef TINYUSB_NEED_POLLING_TASK
 	TinyUSBDevice.task();
 #endif
 
 	uint32_t nowMillis = millis();
-	if (nowMillis - lastUpdateMs < 25)
-	{
+	if (nowMillis - lastUpdateMs < 10) {
 		return;
 	}
 	lastUpdateMs = nowMillis;
@@ -263,30 +241,23 @@ void loop()
 	uint16_t pitchValue = pitchReading;
 	uint16_t volumeValue = volumeMm;
 
-	if (pitchValue < PITCH_MIN_MM || pitchValue > PITCH_MAX_MM)
-	{
+	if (pitchValue < PITCH_MIN_MM || pitchValue > PITCH_MAX_MM) {
 		pitchValue = 0;
 	}
-	if (volumeValue < VOLUME_MIN_MM || volumeValue > VOLUME_MAX_MM)
-	{
+	if (volumeValue < VOLUME_MIN_MM || volumeValue > VOLUME_MAX_MM) {
 		volumeValue = 0;
 	}
 
-	if (midiReady && !prevMidiMounted)
-	{
+	if (midiReady && !prevMidiMounted) {
 		MIDI.sendControlChange(123, 0, 1);
-		if (lastSentNoteOn != 0)
-		{
+		if (lastSentNoteOn != 0) {
 			MIDI.sendNoteOff(lastSentNoteOn, 0, 1);
 			lastSentNoteOn = 0;
 		}
 		noteHeld = false;
 		heldNote = 0;
-	}
-	else if (!midiReady && prevMidiMounted)
-	{
-		if (noteHeld)
-		{
+	} else if (!midiReady && prevMidiMounted) {
+		if (noteHeld) {
 			lastSentNoteOn = heldNote;
 		}
 		noteHeld = false;
@@ -294,8 +265,7 @@ void loop()
 	}
 	prevMidiMounted = midiReady;
 
-	if (pitchValue > 0)
-	{
+	if (pitchValue > 0) {
 		lastValidPitchMm = pitchValue;
 	}
 	const uint16_t pitchMm = lastValidPitchMm;
@@ -306,12 +276,9 @@ void loop()
 	Serial.print(volumeValue);
 	Serial.println(" mm");
 
-	if (!sounding && volumeValue >= VOLUME_ON_MM)
-	{
+	if (!sounding && volumeValue >= VOLUME_ON_MM) {
 		sounding = true;
-	}
-	else if (sounding && volumeValue <= VOLUME_OFF_MM)
-	{
+	} else if (sounding && volumeValue <= VOLUME_OFF_MM) {
 		sounding = false;
 	}
 
@@ -322,66 +289,63 @@ void loop()
 	Serial.print("velocity: ");
 	Serial.println(velocity);
 
-	if (midiReady)
-	{
-		if (sounding)
-		{
-			if (!noteHeld)
-			{
+	if (midiReady) {
+		Serial.println("MIDI is ready, about to send Note On");
+		if (sounding) {
+			if (!noteHeld) {
 				MIDI.sendNoteOn(note, velocity, 1);
 				noteHeld = true;
 				heldNote = note;
 				lastSentNoteOn = note;
-			}
-			else if (heldNote != note)
-			{
+			} else if (heldNote != note) {
 				MIDI.sendNoteOff(heldNote, 0, 1);
 				MIDI.sendNoteOn(note, velocity, 1);
 				heldNote = note;
 				lastSentNoteOn = note;
 			}
 			MIDI.sendPitchBend(bend, 1);
-		}
-		else if (noteHeld)
-		{
+		} else if (noteHeld) {
 			MIDI.sendNoteOff(heldNote, 0, 1);
 			noteHeld = false;
 			heldNote = 0;
 			lastSentNoteOn = 0;
 		}
+		usb_midi.flush();
 		MIDI.sendControlChange(11, expression, 1);
-	}
-	else
-	{
+	} else {
 		noteHeld = false;
 		heldNote = 0;
 	}
 
-	// live pitch indicator on screen
-	static int16_t lastX = -1;
-	int16_t x = mmToX(pitchMm);
-	if (lastX != -1)
-	{
-		tft.fillCircle(lastX, SCREEN_H / 3, 5, ST77XX_BLACK); // +1 radius for safety
+	static uint32_t lastTftUpdateMs = 0;
+	bool shouldUpdateTft = (nowMillis - lastTftUpdateMs >= 50);
+	if (shouldUpdateTft) {
+		lastTftUpdateMs = nowMillis;  // Changed from = 0
+		Serial.print("lastTftUpdateMs");
+		Serial.println(lastTftUpdateMs);
+		// live pitch indicator on screen
+		static int16_t lastX = -1;
+		int16_t x = mmToX(pitchMm);
+		if (lastX != -1) {
+			tft.fillCircle(lastX, SCREEN_H / 3, 5, ST77XX_BLACK);
+		}
+		tft.fillCircle(x, SCREEN_H / 3, 4, sounding ? ST77XX_WHITE : ST77XX_RED);
+		lastX = x;
+
+		// Same for volume indicator
+		static int16_t lastX2 = -1;
+		int16_t x2 = mmToX_Volume(volumeValue);
+
+		if (lastX2 != -1) {
+			tft.fillCircle(lastX2, SCREEN_H - SCREEN_H / 3, 5, ST77XX_BLACK);
+		}
+		tft.fillCircle(x2, SCREEN_H - SCREEN_H / 3, 4, sounding ? ST77XX_WHITE : ST77XX_RED);
+		lastX2 = x2;
 	}
-	tft.fillCircle(x, SCREEN_H / 3, 4, sounding ? ST77XX_WHITE : ST77XX_RED);
-	lastX = x;
 
-	// Same for volume indicator
-	static int16_t lastX2 = -1;
-	int16_t x2 = mmToX_Volume(volumeValue); // Use volume-specific mapping
-
-	if (lastX2 != -1)
-	{
-		tft.fillCircle(lastX2, SCREEN_H - SCREEN_H / 3, 5, ST77XX_BLACK);
-	}
-	tft.fillCircle(x2, SCREEN_H - SCREEN_H / 3, 4, sounding ? ST77XX_WHITE : ST77XX_RED);
-	lastX2 = x2;
-
-	MIDI.read();
+	MIDI.read();  // Moved outside the if block
 }
-void testdrawtext(char *text, uint16_t color)
-{
+void testdrawtext(char *text, uint16_t color) {
 	tft.setCursor(0, 0);
 	tft.setTextColor(color);
 	tft.setTextWrap(true);
