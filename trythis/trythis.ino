@@ -23,16 +23,13 @@
 #define SCREEN_W 128
 #define SCREEN_H 160
 
-// -------------------- BUZZERS --------------------
-#define BUZZER1_PIN 1
-#define BUZZER2_PIN 2
-#define BUZZER3_PIN 3
-
-#define LEDC_CH1 0
-#define LEDC_CH2 1
-#define LEDC_CH3 2
-
-#define LEDC_RES 8
+// -------------------- AUDIO STREAMING --------------------
+#define SAMPLE_RATE 22050
+#define FRAME_SAMPLES 64
+#define SERIAL_BAUD 230400
+#define SYNC_BYTE1 0xAA
+#define SYNC_BYTE2 0x55
+#define SINE_LUT_SIZE 256
 
 // -------------------- SENSOR LIMITS --------------------
 #define PITCH_MIN_MM 30
@@ -56,17 +53,24 @@ uint16_t lastValidVolumeMm = 300;
 
 float pitchSmooth = 0;
 
-// -------------------- SETUP PWM --------------------
-void setupPWM() {
-	pinMode(BUZZER1_PIN, OUTPUT);
-	pinMode(BUZZER2_PIN, OUTPUT);
-	pinMode(BUZZER3_PIN, OUTPUT);
-	// attach PWM freq resolution via new API
-	ledcAttach(BUZZER1_PIN, 2000, LEDC_RES);
-	ledcAttach(BUZZER2_PIN, 2000, LEDC_RES);
-	ledcAttach(BUZZER3_PIN, 2000, LEDC_RES);
+// Audio synthesis state (shared with ISR)
+volatile float g_baseFreq = 440.0f;
+volatile float g_velocity = 0.0f;
+volatile bool g_sounding = false;
 
-}
+// Sine lookup table
+int16_t sineLut[SINE_LUT_SIZE];
+
+// Timer and frame buffer
+hw_timer_t *audioTimer = NULL;
+volatile int16_t frameBuffer[FRAME_SAMPLES];
+volatile uint8_t frameIndex = 0;
+volatile bool frameReady = false;
+
+// Phase accumulators for 3 oscillators
+volatile uint32_t phase1 = 0, phase2 = 0, phase3 = 0;
+volatile uint32_t phaseInc1 = 0, phaseInc2 = 0, phaseInc3 = 0;
+
 // -------------------- HELPERS --------------------
 int noteToFreq(int note) {
 	return (int)(440.0 * pow(2.0, (note - 69) / 12.0));
@@ -82,31 +86,64 @@ int mapVolumeToVelocity(uint16_t mm) {
 	return map(mm, VOLUME_ON_MM, VOLUME_MAX_MM, 0, 127);
 }
 
-// -------------------- BUZZER OUTPUT --------------------
-void updateSound(int baseFreq, int velocity) {
-	if (!sounding || velocity <= 0) {
-		ledcWriteTone(BUZZER1_PIN, 0);
-		ledcWriteTone(BUZZER2_PIN, 0);
-		ledcWriteTone(BUZZER3_PIN, 0);
+// Fast sine from lookup table (linear interpolation)
+inline int16_t sineLerp(uint32_t phase) {
+	uint16_t idx = phase >> 24;
+	uint8_t frac = (phase >> 16) & 0xFF;
+	int16_t a = sineLut[idx];
+	int16_t b = sineLut[(idx + 1) & (SINE_LUT_SIZE - 1)];
+	return a + ((int32_t)(b - a) * frac >> 8);
+}
+
+// -------------------- AUDIO ISR --------------------
+void IRAM_ATTR onAudioTimer() {
+	if (!g_sounding || g_velocity <= 0.0f) {
+		frameBuffer[frameIndex++] = 0;
+		if (frameIndex >= FRAME_SAMPLES) {
+			frameIndex = 0;
+			frameReady = true;
+		}
 		return;
 	}
 
-	float vol = velocity / 127.0;
+	phase1 += phaseInc1;
+	phase2 += phaseInc2;
+	phase3 += phaseInc3;
 
-	float f1 = baseFreq;
-	float f2 = baseFreq * 1.01;
-	float f3 = baseFreq * 0.5;
-	uint32_t duty = (uint32_t)(vol * 255);
+	int32_t sum = sineLerp(phase1) + sineLerp(phase2) + sineLerp(phase3);
+	int16_t sample = (int32_t)(sum * g_velocity * 0.33333f * 32767.0f) >> 15;
 
-	ledcWriteTone(BUZZER1_PIN, (int)f1);
-	ledcWriteTone(BUZZER2_PIN, (int)f2);
-	ledcWriteTone(BUZZER3_PIN, (int)f3);
+	frameBuffer[frameIndex++] = sample;
 
-	ledcWrite(BUZZER1_PIN, duty);
-	ledcWrite(BUZZER2_PIN, duty);
-	ledcWrite(BUZZER3_PIN, duty / 2);
-
+	if (frameIndex >= FRAME_SAMPLES) {
+		frameIndex = 0;
+		frameReady = true;
+	}
 }
+
+// -------------------- SERIAL FRAMING --------------------
+void sendFrame() {
+	if (Serial.availableForWrite() < FRAME_SAMPLES * 2 + 5) return;
+
+	uint8_t checksum = 0;
+	Serial.write(SYNC_BYTE1);
+	Serial.write(SYNC_BYTE2);
+	Serial.write(FRAME_SAMPLES);
+	checksum ^= SYNC_BYTE1;
+	checksum ^= SYNC_BYTE2;
+	checksum ^= FRAME_SAMPLES;
+
+	for (uint8_t i = 0; i < FRAME_SAMPLES; i++) {
+		uint8_t lo = frameBuffer[i] & 0xFF;
+		uint8_t hi = (frameBuffer[i] >> 8) & 0xFF;
+		Serial.write(lo);
+		Serial.write(hi);
+		checksum ^= lo;
+		checksum ^= hi;
+	}
+	Serial.write(checksum);
+}
+
 // -------------------- SENSOR --------------------
 bool bringUpSensor(uint8_t xshutPin, uint8_t address, Adafruit_VL53L0X &sensor) {
 	digitalWrite(xshutPin, HIGH);
@@ -123,7 +160,7 @@ uint16_t readMm(Adafruit_VL53L0X &sensor) {
 
 // -------------------- SETUP --------------------
 void setup() {
-	Serial.begin(9600);
+	Serial.begin(SERIAL_BAUD);
 
 	SPI.begin();
 
@@ -138,7 +175,16 @@ void setup() {
 	digitalWrite(VOLUME_XSHUT, LOW);
 	delay(10);
 
-	setupPWM();
+	// Build sine lookup table
+	for (int i = 0; i < SINE_LUT_SIZE; i++) {
+		sineLut[i] = (int16_t)(sinf(2.0f * PI * i / SINE_LUT_SIZE) * 32767.0f);
+	}
+
+        // Configure audio timer (22050 Hz) - ESP32 Arduino core v3.x API
+        audioTimer = timerBegin(1000000);  // 1 MHz base frequency
+        timerAttachInterrupt(audioTimer, &onAudioTimer);
+        timerAlarm(audioTimer, 1000000 / SAMPLE_RATE, true, 0);
+        timerStart(audioTimer);
 
 	if (!bringUpSensor(PITCH_XSHUT, PITCH_ADDR, pitchSensor)) {
 		Serial.println("Pitch fail");
@@ -155,33 +201,63 @@ void setup() {
 
 // -------------------- LOOP --------------------
 void loop() {
+    static uint32_t lastPitchRead = 0;
+    static uint32_t lastVolumeRead = 0;
+    static bool readPitch = true;
+    uint32_t now = millis();
 
-	uint16_t pitchMm = readMm(pitchSensor);
-	uint16_t volumeMm = readMm(volumeSensor);
+    // Stagger sensor reads to reduce peak current (50ms apart)
+    if (readPitch && (now - lastPitchRead >= 50)) {
+        uint16_t pitchMm = readMm(pitchSensor);
+        if (pitchMm) lastValidPitchMm = pitchMm;
+        lastPitchRead = now;
+        readPitch = false;
+    } else if (!readPitch && (now - lastVolumeRead >= 50)) {
+        uint16_t volumeMm = readMm(volumeSensor);
+        if (volumeMm) lastValidVolumeMm = volumeMm;
+        lastVolumeRead = now;
+        readPitch = true;
+    }
 
-	if (pitchMm) lastValidPitchMm = pitchMm;
-	pitchMm = lastValidPitchMm;
-	if (volumeMm) lastValidVolumeMm = volumeMm;
-	volumeMm = lastValidVolumeMm;
+    uint16_t pitchMm = lastValidPitchMm;
+    uint16_t volumeMm = lastValidVolumeMm;
 
-	int note = mapPitchToNote(pitchMm);
-	int freq = noteToFreq(note);
-	int velocity = mapVolumeToVelocity(volumeMm);
+    int note = mapPitchToNote(pitchMm);
+    int freq = noteToFreq(note);
+    int velocity = mapVolumeToVelocity(volumeMm);
 
-	// sound gate with hysteresis
-	if (volumeMm > VOLUME_OFF_MM) sounding = true;
-	else if (volumeMm < VOLUME_ON_MM) sounding = false;
+    // sound gate with hysteresis
+    if (volumeMm > VOLUME_OFF_MM) sounding = true;
+    else if (volumeMm < VOLUME_ON_MM) sounding = false;
 
-	// smoothing pitch
-	pitchSmooth = pitchSmooth * 0.85 + freq * 0.15;
+    // smoothing pitch
+    pitchSmooth = pitchSmooth * 0.85 + freq * 0.15;
 
-	updateSound((int)pitchSmooth, velocity);
+    // Update ISR globals atomically
+    noInterrupts();
+    g_baseFreq = pitchSmooth;
+    g_velocity = velocity / 127.0f;
+    g_sounding = sounding;
 
-	// minimal debug
-	Serial.print("freq ");
-	Serial.print(freq);
-	Serial.print(" vel ");
-	Serial.println(velocity);
+    float phaseIncBase = g_baseFreq * (float)(1ULL << 32) / SAMPLE_RATE;
+    phaseInc1 = (uint32_t)phaseIncBase;
+    phaseInc2 = (uint32_t)(phaseIncBase * 1.01f);
+    phaseInc3 = (uint32_t)(phaseIncBase * 0.5f);
+    interrupts();
 
-	delay(10);
+    // Send completed frames
+    if (frameReady) {
+        frameReady = false;
+        sendFrame();
+    }
+
+    // Debug output (throttled)
+    static uint32_t lastDebug = 0;
+    if (millis() - lastDebug > 100) {
+        Serial.print("freq ");
+        Serial.print(freq);
+        Serial.print(" vel ");
+        Serial.println(velocity);
+        lastDebug = millis();
+    }
 }
