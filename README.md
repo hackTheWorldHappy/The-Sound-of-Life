@@ -1,2 +1,2 @@
-# Theremin-DEV
-Chronos's Theremin DEV
+# Theremin
+Chronos's Theremin
