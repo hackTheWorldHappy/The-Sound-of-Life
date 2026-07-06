@@ -1,2 +1,2 @@
 # Theremin
-Chronos's Theremin
+The Sound of Life
