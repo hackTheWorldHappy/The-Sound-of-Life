@@ -85,7 +85,18 @@ bool sounding = false;
 bool prevMidiMounted = false;
 int lastSentNoteOn = 0;
 
+
+float filteredPitch = (PITCH_MIN_MM + PITCH_MAX_MM) / 2.0f;
+
 uint16_t lastValidPitchMm = (PITCH_MIN_MM + PITCH_MAX_MM) / 2;
+
+const float alphaPitch = 0.35f;
+const float alphaVolume = 0.15f;
+
+const int DEADZONE = 2;
+
+
+
 
 bool bringUpSensor(uint8_t xshutPin, uint8_t address, Adafruit_VL53L0X &sensor) {
 	digitalWrite(xshutPin, HIGH);
@@ -230,9 +241,6 @@ void loop() {
 #endif
 
 	uint32_t nowMillis = millis();
-	if (nowMillis - lastUpdateMs < 10) {
-		return;
-	}
 	lastUpdateMs = nowMillis;
 
 	const bool midiReady = TinyUSBDevice.mounted();
@@ -247,6 +255,21 @@ void loop() {
 	if (volumeValue < VOLUME_MIN_MM || volumeValue > VOLUME_MAX_MM) {
 		volumeValue = 0;
 	}
+
+
+	// Smooth the pitch
+	if (pitchValue > 0) {
+		filteredPitch += alphaPitch * (pitchValue - filteredPitch);
+	}
+
+	uint16_t filteredPitchMm = (uint16_t)filteredPitch;
+
+	if (abs((int)filteredPitchMm - (int)lastValidPitchMm) > DEADZONE) {
+		lastValidPitchMm = filteredPitchMm;
+	}
+
+	uint16_t pitchMm = lastValidPitchMm;
+
 
 	if (midiReady && !prevMidiMounted) {
 		MIDI.sendControlChange(123, 0, 1);
@@ -265,27 +288,24 @@ void loop() {
 	}
 	prevMidiMounted = midiReady;
 
-	if (pitchValue > 0) {
-		lastValidPitchMm = pitchValue;
-	}
-	const uint16_t pitchMm = lastValidPitchMm;
+	pitchMm = lastValidPitchMm;
 
 	Serial.print("Pitch: ");
-	Serial.print(pitchValue);
+	Serial.print(filteredPitch);
 	Serial.print(" mm\tVolume: ");
-	Serial.print(volumeValue);
+	Serial.print(volumeFiltered);
 	Serial.println(" mm");
 
-	if (!sounding && volumeValue >= VOLUME_ON_MM) {
+	if (!sounding && volumeFiltered >= VOLUME_ON_MM) {
 		sounding = true;
-	} else if (sounding && volumeValue <= VOLUME_OFF_MM) {
+	} else if (sounding && volumeFiltered <= VOLUME_OFF_MM) {
 		sounding = false;
 	}
 
 	const int note = mapPitchToNote(pitchMm);
 	const int bend = mapPitchToBend(pitchMm);
-	const byte expression = mapVolumeToExpression(volumeValue);
-	const int velocity = mapVolumeToVelocity(volumeValue);
+	const byte expression = mapVolumeToExpression(volumeFiltered);
+	const int velocity = mapVolumeToVelocity(volumeFiltered);
 	Serial.print("velocity: ");
 	Serial.println(velocity);
 
