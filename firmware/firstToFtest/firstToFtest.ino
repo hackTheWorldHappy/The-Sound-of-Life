@@ -1,54 +1,389 @@
+#include <Arduino.h>
+#include <Wire.h>
 #include <Adafruit_VL53L0X.h>
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+
+#define PITCH_ADDR 0x30
+#define VOLUME_ADDR 0x31
+
+#define I2C_SDA 8
+#define I2C_SCL 46
+
+#define PITCH_XSHUT 4
+#define VOLUME_XSHUT 5
+
+#define PITCH_MIN_MM 30
+#define PITCH_MAX_MM 320
+#define NOTE_MIN 48
+#define NOTE_MAX 84
+#define VOLUME_MIN_MM 30
+#define VOLUME_MAX_MM 480
+
+#define VOLUME_ON_MM 70
+#define VOLUME_OFF_MM 110
+
+#define VELOCITY_MIN 0
+#define VELOCITY_MAX 127
+
+#define TFT_CS 10
+#define TFT_RST 9
+#define TFT_DC 14
+// SPI pins used with SPI.begin(sck, miso, mosi, cs) below
+
+#define SCREEN_W 128
+#define SCREEN_H 160 // most ST7735 1.8" panels are 128x160 -- change if yours differs
+
+float p = 3.1415926;
 
 Adafruit_USBD_MIDI usb_midi;
+MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
+
 Adafruit_VL53L0X pitchSensor;
 Adafruit_VL53L0X volumeSensor;
 
-MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
+// THIS WAS MISSING -- tft was used everywhere but never declared
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
+struct SongNote
+{
+	uint8_t note;
+	uint16_t durationMs;
+};
 
-void setup() {
-  Serial.begin(115200);  //may increase when need faster comms
-  Wire.begin();
-  pitchSensor.begin();
-  volumeSensor.begin();
+const SongNote song[] = {
+	{60, 400},
+	{60, 400},
+	{67, 400},
+	{67, 400},
+	{69, 400},
+	{69, 400},
+	{67, 800},
+	{65, 400},
+	{65, 400},
+	{64, 400},
+	{64, 400},
+	{62, 400},
+	{62, 400},
+	{60, 800},
+};
+const uint8_t songLength = sizeof(song) / sizeof(song[0]);
 
-  //Set Address
-  pitchSensor.setAddress(0x29);  //Default
-  volumeSensor.setAddress(0x30);
+uint32_t songCumMs[sizeof(song) / sizeof(song[0]) + 1];
+uint32_t totalSongMs = 0;
+uint32_t songStartMs = 0;
 
+uint32_t lastUpdateMs = 0;
+bool noteHeld = false;
+int heldNote = 0;
+bool sounding = false;
 
-  //midi init
-  MIDI.begin(MIDI_CHANNEL_OMNI);
-  MIDI.setHandleNoteOn(handleNoteOn);
-  MIDI.setHandleNoteOff(handleNoteOff);
+bool prevMidiMounted = false;
+int lastSentNoteOn = 0;
+
+uint16_t lastValidPitchMm = (PITCH_MIN_MM + PITCH_MAX_MM) / 2;
+
+bool bringUpSensor(uint8_t xshutPin, uint8_t address, Adafruit_VL53L0X &sensor)
+{
+	digitalWrite(xshutPin, HIGH);
+	delay(10);
+	return sensor.begin(address);
 }
 
-void loop() {
-  VL53L0X_RangingMeasurementData_t pitchMeasure;
-  pitchSensor.rangingTest(&pitchMeasure, true);
-  VL53L0X_RangingMeasurementData_t volumeMeasure;
-  volumeSensor.rangingTest(&volumeMeasure, true);
+uint16_t readMm(Adafruit_VL53L0X &sensor)
+{
+	VL53L0X_RangingMeasurementData_t measurement;
+	sensor.rangingTest(&measurement, false);
 
+	// Valid is 0
+	if (measurement.RangeStatus == 4)
+	{
+		return 0;
+	}
 
-  Serial.println(pitchMeasure.RangeMilliMeter);
-  Serial.println(volumeMeasure.RangeMilliMeter);
-  MIDI.sendNoteOn(60, 127, 1);  // Send middle C
-  MIDI.read();                  // Process incoming messages
+	return measurement.RangeMilliMeter;
 }
 
-/*
-void sendNote(uint8_t note) {
-  uint8_t msg[3];
-
-  msg[0] = 0x90;
-  msg[1] = 61;
-  msg[2] = 127;
-
-  usb_midi.send(msg, 3);
+int mapPitchToNote(uint16_t mm)
+{
+	return (int)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM), PITCH_MIN_MM, PITCH_MAX_MM, NOTE_MIN, NOTE_MAX);
 }
-*/
 
+int mapVolumeToVelocity(uint16_t mm)
+{
+	if (mm == 0)
+		return 0;
+	if (mm < VOLUME_ON_MM)
+		return 0;
+	if (mm > VOLUME_MAX_MM)
+		return VELOCITY_MAX;
 
+	float normalized = (float)(mm - VOLUME_ON_MM) / (VOLUME_MAX_MM - VOLUME_ON_MM);
+	normalized = constrain(normalized, 0.0f, 1.0f);
+
+	float curved = pow(normalized, 1.5f);
+
+	return (int)(curved * VELOCITY_MAX);
+}
+
+int mapPitchToBend(uint16_t mm)
+{
+	return (int)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM),
+					PITCH_MIN_MM, PITCH_MAX_MM, -8192, 8191);
+}
+
+byte mapVolumeToExpression(uint16_t mm)
+{
+	if (mm == 0)
+		return 0;
+	if (mm > VOLUME_MAX_MM)
+		return 0;
+	return (byte)map(constrain((long)mm, (long)VOLUME_MIN_MM, (long)VOLUME_MAX_MM), VOLUME_MIN_MM, VOLUME_MAX_MM, 127, 0);
+}
+
+uint16_t noteToMm(uint8_t note)
+{
+	int n = constrain((int)note, NOTE_MIN, NOTE_MAX);
+	return (uint16_t)map(n, NOTE_MAX, NOTE_MIN, PITCH_MIN_MM, PITCH_MAX_MM);
+}
+
+int16_t mmToX(uint16_t mm)
+{
+	return (int16_t)map(constrain((long)mm, (long)PITCH_MIN_MM, (long)PITCH_MAX_MM),
+						PITCH_MIN_MM, PITCH_MAX_MM, 0, SCREEN_W - 1);
+}
+int16_t mmToX_Volume(uint16_t mm)
+{
+	return (int16_t)map(constrain((long)mm, (long)VOLUME_MIN_MM, (long)VOLUME_MAX_MM),
+						VOLUME_MIN_MM, VOLUME_MAX_MM, 0, SCREEN_W - 1);
+}
+
+void buildSongTiming()
+{
+	songCumMs[0] = 0;
+	for (uint8_t i = 0; i < songLength; i++)
+	{
+		songCumMs[i + 1] = songCumMs[i] + song[i].durationMs;
+	}
+	totalSongMs = songCumMs[songLength];
+}
+
+uint8_t noteAtTime(uint32_t t)
+{
+	t %= totalSongMs;
+	for (uint8_t i = 0; i < songLength; i++)
+	{
+		if (t < songCumMs[i + 1])
+			return song[i].note;
+	}
+	return song[songLength - 1].note;
+}
+
+void setup()
+{
+	Serial.begin(115200);
+
+	SPI.begin();
+	Serial.println(F("Initializing TFT..."));
+	tft.initR(INITR_GREENTAB);
+	tft.fillScreen(ST77XX_BLACK);
+	tft.setRotation(0); // For Testing
+	Serial.println(F("TFT initialized"));
+
+	// --- Sensors ---
+	Wire.begin(I2C_SDA, I2C_SCL);
+
+	pinMode(PITCH_XSHUT, OUTPUT);
+	pinMode(VOLUME_XSHUT, OUTPUT);
+	digitalWrite(PITCH_XSHUT, LOW);
+	digitalWrite(VOLUME_XSHUT, LOW);
+	delay(10);
+
+	if (!TinyUSBDevice.isInitialized())
+	{
+		TinyUSBDevice.begin(0);
+	}
+
+	usb_midi.setStringDescriptor("Theremin MIDI");
+	MIDI.begin(MIDI_CHANNEL_OMNI);
+
+	if (TinyUSBDevice.mounted())
+	{
+		TinyUSBDevice.detach();
+		delay(10);
+		TinyUSBDevice.attach();
+	}
+
+	if (!bringUpSensor(PITCH_XSHUT, PITCH_ADDR, pitchSensor))
+	{
+		Serial.println("Failed to detect Pitch sensor");
+		delay(1000);
+	}
+
+	if (!bringUpSensor(VOLUME_XSHUT, VOLUME_ADDR, volumeSensor))
+	{
+		Serial.println("Failed to detect Volume sensor");
+		delay(1000);
+	}
+
+	Serial.println("Two VL53L0X ready!");
+
+	buildSongTiming();
+	songStartMs = millis();
+
+	// quick one-shot visual confirmation the panel is alive
+	tft.fillScreen(ST77XX_BLACK);
+	tft.setCursor(0, 0);
+	tft.setTextColor(ST77XX_GREEN);
+	tft.setTextSize(1);
+	tft.println("Theremin ready");
+	delay(1000);
+	tft.fillScreen(ST77XX_BLACK);
+}
+
+void loop()
+{
+#ifdef TINYUSB_NEED_POLLING_TASK
+	TinyUSBDevice.task();
+#endif
+
+	uint32_t nowMillis = millis();
+	if (nowMillis - lastUpdateMs < 25)
+	{
+		return;
+	}
+	lastUpdateMs = nowMillis;
+
+	const bool midiReady = TinyUSBDevice.mounted();
+	const uint16_t pitchReading = readMm(pitchSensor);
+	const uint16_t volumeMm = readMm(volumeSensor);
+	uint16_t pitchValue = pitchReading;
+	uint16_t volumeValue = volumeMm;
+
+	if (pitchValue < PITCH_MIN_MM || pitchValue > PITCH_MAX_MM)
+	{
+		pitchValue = 0;
+	}
+	if (volumeValue < VOLUME_MIN_MM || volumeValue > VOLUME_MAX_MM)
+	{
+		volumeValue = 0;
+	}
+
+	if (midiReady && !prevMidiMounted)
+	{
+		MIDI.sendControlChange(123, 0, 1);
+		if (lastSentNoteOn != 0)
+		{
+			MIDI.sendNoteOff(lastSentNoteOn, 0, 1);
+			lastSentNoteOn = 0;
+		}
+		noteHeld = false;
+		heldNote = 0;
+	}
+	else if (!midiReady && prevMidiMounted)
+	{
+		if (noteHeld)
+		{
+			lastSentNoteOn = heldNote;
+		}
+		noteHeld = false;
+		heldNote = 0;
+	}
+	prevMidiMounted = midiReady;
+
+	if (pitchValue > 0)
+	{
+		lastValidPitchMm = pitchValue;
+	}
+	const uint16_t pitchMm = lastValidPitchMm;
+
+	Serial.print("Pitch: ");
+	Serial.print(pitchValue);
+	Serial.print(" mm\tVolume: ");
+	Serial.print(volumeValue);
+	Serial.println(" mm");
+
+	if (!sounding && volumeValue >= VOLUME_ON_MM)
+	{
+		sounding = true;
+	}
+	else if (sounding && volumeValue <= VOLUME_OFF_MM)
+	{
+		sounding = false;
+	}
+
+	const int note = mapPitchToNote(pitchMm);
+	const int bend = mapPitchToBend(pitchMm);
+	const byte expression = mapVolumeToExpression(volumeValue);
+	const int velocity = mapVolumeToVelocity(volumeValue);
+	Serial.print("velocity: ");
+	Serial.println(velocity);
+
+	if (midiReady)
+	{
+		if (sounding)
+		{
+			if (!noteHeld)
+			{
+				MIDI.sendNoteOn(note, velocity, 1);
+				noteHeld = true;
+				heldNote = note;
+				lastSentNoteOn = note;
+			}
+			else if (heldNote != note)
+			{
+				MIDI.sendNoteOff(heldNote, 0, 1);
+				MIDI.sendNoteOn(note, velocity, 1);
+				heldNote = note;
+				lastSentNoteOn = note;
+			}
+			MIDI.sendPitchBend(bend, 1);
+		}
+		else if (noteHeld)
+		{
+			MIDI.sendNoteOff(heldNote, 0, 1);
+			noteHeld = false;
+			heldNote = 0;
+			lastSentNoteOn = 0;
+		}
+		MIDI.sendControlChange(11, expression, 1);
+	}
+	else
+	{
+		noteHeld = false;
+		heldNote = 0;
+	}
+
+	// live pitch indicator on screen
+	static int16_t lastX = -1;
+	int16_t x = mmToX(pitchMm);
+	if (lastX != -1)
+	{
+		tft.fillCircle(lastX, SCREEN_H / 3, 5, ST77XX_BLACK); // +1 radius for safety
+	}
+	tft.fillCircle(x, SCREEN_H / 3, 4, sounding ? ST77XX_WHITE : ST77XX_RED);
+	lastX = x;
+
+	// Same for volume indicator
+	static int16_t lastX2 = -1;
+	int16_t x2 = mmToX_Volume(volumeValue); // Use volume-specific mapping
+
+	if (lastX2 != -1)
+	{
+		tft.fillCircle(lastX2, SCREEN_H - SCREEN_H / 3, 5, ST77XX_BLACK);
+	}
+	tft.fillCircle(x2, SCREEN_H - SCREEN_H / 3, 4, sounding ? ST77XX_WHITE : ST77XX_RED);
+	lastX2 = x2;
+
+	MIDI.read();
+}
+void testdrawtext(char *text, uint16_t color)
+{
+	tft.setCursor(0, 0);
+	tft.setTextColor(color);
+	tft.setTextWrap(true);
+	tft.print(text);
+}
