@@ -27,12 +27,10 @@
 #define BUZZER1_PIN 1
 #define BUZZER2_PIN 2
 #define BUZZER3_PIN 3
-#define BUZZER4_PIN 4
 
 #define LEDC_CH1 0
 #define LEDC_CH2 1
 #define LEDC_CH3 2
-#define LEDC_CH4 3
 
 #define LEDC_RES 8
 
@@ -62,13 +60,11 @@ void setupPWM() {
 	pinMode(BUZZER1_PIN, OUTPUT);
 	pinMode(BUZZER2_PIN, OUTPUT);
 	pinMode(BUZZER3_PIN, OUTPUT);
-	pinMode(BUZZER4_PIN, OUTPUT);
-
 	// attach PWM freq resolution via new API
-	ledcAttach(BUZZER1_PIN, 2000, 10);
-	ledcAttach(BUZZER2_PIN, 2000, 10);
-	ledcAttach(BUZZER3_PIN, 2000, 10);
-	ledcAttach(BUZZER4_PIN, 2000, 10);
+	ledcAttach(BUZZER1_PIN, 2000, LEDC_RES);
+	ledcAttach(BUZZER2_PIN, 2000, LEDC_RES);
+	ledcAttach(BUZZER3_PIN, 2000, LEDC_RES);
+
 }
 // -------------------- HELPERS --------------------
 int noteToFreq(int note) {
@@ -87,12 +83,10 @@ int mapVolumeToVelocity(uint16_t mm) {
 
 // -------------------- BUZZER OUTPUT --------------------
 void updateSound(int baseFreq, int velocity) {
-  velocity = 100;
 	if (!sounding || velocity <= 0) {
 		ledcWriteTone(BUZZER1_PIN, 0);
 		ledcWriteTone(BUZZER2_PIN, 0);
 		ledcWriteTone(BUZZER3_PIN, 0);
-		ledcWriteTone(BUZZER4_PIN, 0);
 		return;
 	}
 
@@ -101,19 +95,16 @@ void updateSound(int baseFreq, int velocity) {
 	float f1 = baseFreq;
 	float f2 = baseFreq * 1.01;
 	float f3 = baseFreq * 0.5;
-	float f4 = baseFreq * 2.0;
-
 	uint32_t duty = (uint32_t)(vol * 255);
 
 	ledcWriteTone(BUZZER1_PIN, (int)f1);
 	ledcWriteTone(BUZZER2_PIN, (int)f2);
 	ledcWriteTone(BUZZER3_PIN, (int)f3);
-	ledcWriteTone(BUZZER4_PIN, (int)f4);
 
 	ledcWrite(BUZZER1_PIN, duty);
 	ledcWrite(BUZZER2_PIN, duty);
 	ledcWrite(BUZZER3_PIN, duty / 2);
-	ledcWrite(BUZZER4_PIN, duty / 3);
+
 }
 // -------------------- SENSOR --------------------
 bool bringUpSensor(uint8_t xshutPin, uint8_t address, Adafruit_VL53L0X &sensor) {
