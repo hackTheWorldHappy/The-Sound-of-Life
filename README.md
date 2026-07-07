@@ -1,4 +1,5 @@
 # The Sound of Life 
+<img width="5712" height="3213" alt="janky_readmefalloutpic" src="https://github.com/user-attachments/assets/06261791-2a07-49e5-96f6-a99812ab7862" />
 
 A portable theremin using two time of flight sensors (ToFs) to detect pitch and volume. Also has a 1.8 TFT, which displays your live hand position relative to the sensors in order to make it easier to locate the proper pitch/volume.  
 
